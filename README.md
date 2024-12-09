@@ -10,7 +10,7 @@ This application demonstrate how to capture screen using Desktop Duplication API
 
 
 <p align="center">
-  <img src="demo.png" alt="Screenshot of Process Demoter" style="max-width:100%; height:auto;">
+  <img src="demo.png" alt="" style="max-width:100%; height:auto;">
 </p>
 
 
