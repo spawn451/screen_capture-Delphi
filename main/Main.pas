@@ -44,8 +44,8 @@ type
     Bitmap: TBitmap;
     CaptureActive: Boolean;
     FrameCount: Integer;
-
     FDesktopBitmap: TBitmap;
+    FirstFrame: Boolean;
 
     procedure OnNewFrameDXGIFullScreen(const Frame: TFrame;
       const Monitor: TMonitor);
@@ -291,7 +291,7 @@ end;
 
 procedure TForm1.btnStartDXGIDirtyClick(Sender: TObject);
 begin
-  messagesLog.clear;
+  messagesLog.Clear;
 
   btnStopGDI.Enabled := false;
   btnStartGDI.Enabled := false;
@@ -303,12 +303,17 @@ begin
   if not CaptureActive then
   begin
     // Initialize the DXGIProcessor if it hasn't been done yet
-    if DXGIProcessor  = nil then
+    if DXGIProcessor = nil then
     begin
       FrameCount := 0;
       ThreadData := TThreadData.Create;
-      ThreadData.ScreenCaptureData.OnFrameChangedDXGIRegion :=
-        OnFrameChangedDXGIRegion;
+
+      // Track if it's the first frame (initial full-screen capture)
+      FirstFrame := True;
+
+      // Use the full-screen event on the first frame
+      ThreadData.ScreenCaptureData.OnNewFrameDXGIFullScreen := OnNewFrameDXGIFullScreen;
+      ThreadData.ScreenCaptureData.OnFrameChangedDXGIRegion := OnFrameChangedDXGIRegion;
 
       // Get the selected monitor
       SelectedMonitor := GetSelectedMonitor;
@@ -321,8 +326,7 @@ begin
       DXGIProcessor := TDXFrameProcessor.Create;
       if DXGIProcessor.Init(ThreadData, SelectedMonitor) <> DUPL_RETURN_SUCCESS then
       begin
-        Display('Error',
-          'Failed to initialize the frame processor.');
+        Display('Error', 'Failed to initialize the frame processor.');
         Exit;
       end;
     end;
@@ -332,7 +336,24 @@ begin
     // Start DXGI capture loop
     while CaptureActive do
     begin
-      DXGIProcessor.ProcessFrame(SelectedMonitor);
+      // If it's the first frame, use full screen
+      if FirstFrame then
+      begin
+        // Call the full screen frame capture function here
+        DXGIProcessor.ProcessFrame(SelectedMonitor);
+
+        // Once the first frame is processed, switch to region update
+        FirstFrame := False;
+        // Switch the event handler to update only changed regions
+        ThreadData.ScreenCaptureData.OnNewFrameDXGIFullScreen := nil;
+        ThreadData.ScreenCaptureData.OnFrameChangedDXGIRegion := OnFrameChangedDXGIRegion;
+      end
+      else
+      begin
+        // After the first frame, only process changed regions
+        DXGIProcessor.ProcessFrame(SelectedMonitor);
+      end;
+
       Application.ProcessMessages;
     end;
   end;
@@ -357,7 +378,13 @@ begin
     begin
       FrameCount := 0;
       ThreadData := TThreadData.Create;
+
+      // Track if it's the first frame (initial full-screen capture)
+      FirstFrame := True;
+
+      // Use the full-screen event on the first frame
       ThreadData.ScreenCaptureData.OnNewFrameGDIFullScreen := OnNewFrameGDIFullScreen;
+      ThreadData.ScreenCaptureData.OnFrameChangedGDIRegion := OnFrameChangedGDIRegion;
 
       // Get the selected monitor
       SelectedMonitor := GetSelectedMonitor;
@@ -379,7 +406,23 @@ begin
     // Start GDI capture loop
     while CaptureActive do
     begin
-      GDIProcessor.ProcessFrame(SelectedMonitor);
+      // If it's the first frame, use full screen
+      if FirstFrame then
+      begin
+        GDIProcessor.ProcessFrame(SelectedMonitor);
+
+        // Once the first frame is processed, switch to region update
+        FirstFrame := False;
+        // Switch the event handler to update only changed regions
+        ThreadData.ScreenCaptureData.OnNewFrameGDIFullScreen := nil;
+        ThreadData.ScreenCaptureData.OnFrameChangedGDIRegion := OnFrameChangedGDIRegion;
+      end
+      else
+      begin
+        // After the first frame, only process changed regions
+        GDIProcessor.ProcessFrame(SelectedMonitor);
+      end;
+
       Application.ProcessMessages;
     end;
   end;
@@ -485,27 +528,22 @@ begin
   end;
 end;
 
-procedure TForm1.OnNewFrameDXGIFullScreen(const Frame: TFrame;
-const Monitor: TMonitor);
+procedure TForm1.OnNewFrameGDIFullScreen(const Frame: TFrame; const Monitor: TMonitor);
 var
   Y: Integer;
   FrameBitmap: TBitmap;
   DstRow: PByte;
   SrcRow: PByte;
   RowWidth: Integer;
-  MetaStruct: TBytes;
-  PixelData: TBytes;
-  StreamSize: Integer;
-  CombinedData: TBytes;
 begin
   FrameBitmap := TBitmap.Create;
   try
-    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left,
-    Frame.Bounds.Bottom - Frame.Bounds.Top);
+    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top);
     FrameBitmap.PixelFormat := pf32bit;
 
-     Display('DXGI', Format('Left=%d Top=%d Right=%d Bottom=%d',
-    [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
+    // Log the frame details
+    Display('GDI Full Screen', Format('Left=%d Top=%d Right=%d Bottom=%d',
+      [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
 
     // Fast row copy
     RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
@@ -516,13 +554,148 @@ begin
       Move(SrcRow^, DstRow^, RowWidth);
     end;
 
-    // Save the frame to file with region coordinates (optional)
-    //FrameBitmap.SaveToFile(Format('D:\Capture\DXGIFrame_%d_Region_%dx%d_at_%d_%d.bmp',
-    //[FrameCount, Width, Height, Frame.Bounds.Left, Frame.Bounds.Top]));
-    //Inc(FrameCount);
+    // Save the frame to file (optional)
+    // FrameBitmap.SaveToFile(Format('D:\Capture\GDIFrame_%d_FullScreen_%dx%d.bmp', [FrameCount, Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top]));
+    // Inc(FrameCount);
 
-    // Draw the frame
+    // Draw the full frame to the screen
     Image1.Picture.Bitmap.Assign(FrameBitmap);
+
+    // Ensure desktop bitmap is correctly sized
+    if (FDesktopBitmap.Width <> SelectedMonitor.Width) or
+       (FDesktopBitmap.Height <> SelectedMonitor.Height) then
+    begin
+      FDesktopBitmap.SetSize(SelectedMonitor.Width, SelectedMonitor.Height);
+    end;
+
+    // Log the desktop bitmap update
+    Display('GDI Full Screen', Format('Drawing full frame to desktop bitmap: Width=%d, Height=%d',
+      [FDesktopBitmap.Width, FDesktopBitmap.Height]));
+
+    // Draw the entire screen to the desktop bitmap
+    FDesktopBitmap.Canvas.Lock;
+    try
+      FDesktopBitmap.Canvas.Draw(0, 0, FrameBitmap);
+    finally
+      FDesktopBitmap.Canvas.Unlock;
+    end;
+
+  finally
+    FrameBitmap.Free;
+  end;
+end;
+
+procedure TForm1.OnFrameChangedGDIRegion(const Frame: TFrame; const Monitor: TMonitor);
+var
+  Y: Integer;
+  FrameBitmap: TBitmap;
+  DstRow: PByte;
+  SrcRow: PByte;
+  RowWidth: Integer;
+begin
+  FrameBitmap := TBitmap.Create;
+  try
+    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top);
+    FrameBitmap.PixelFormat := pf32bit;
+
+    // Log the frame update for changed regions
+    Display('GDI Region', Format('Left=%d Top=%d Right=%d Bottom=%d',
+      [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
+
+    // Fast row copy
+    RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
+    for Y := 0 to FrameBitmap.Height - 1 do
+    begin
+      DstRow := FrameBitmap.ScanLine[Y];
+      SrcRow := PByte(Frame.Data) + (Y * Frame.RowStrideInBytes);
+      Move(SrcRow^, DstRow^, RowWidth);
+    end;
+
+    // Save the frame to file (optional)
+    // FrameBitmap.SaveToFile(Format('D:\Capture\GDIFrame_%d_Region_%dx%d_at_%d_%d.bmp',
+    // [FrameCount, Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top, Frame.Bounds.Left, Frame.Bounds.Top]));
+    // Inc(FrameCount);
+
+    // Ensure desktop bitmap is correctly sized
+    if (FDesktopBitmap.Width <> SelectedMonitor.Width) or
+       (FDesktopBitmap.Height <> SelectedMonitor.Height) then
+    begin
+      FDesktopBitmap.SetSize(SelectedMonitor.Width, SelectedMonitor.Height);
+    end;
+
+    // Log the desktop bitmap update
+    Display('GDI Region', Format('Updating dirty region on desktop bitmap: Width=%d, Height=%d',
+      [FDesktopBitmap.Width, FDesktopBitmap.Height]));
+
+    // Update only the changed region on top of the full screen
+    FDesktopBitmap.Canvas.Lock;
+    try
+      // Copy the dirty region to the full-screen bitmap
+      FDesktopBitmap.Canvas.Draw(Frame.Bounds.Left, Frame.Bounds.Top, FrameBitmap);
+    finally
+      FDesktopBitmap.Canvas.Unlock;
+    end;
+
+    // Assign the updated full screen with the updated region to the image control
+    Image1.Picture.Bitmap.Assign(FDesktopBitmap);
+
+  finally
+    FrameBitmap.Free;
+  end;
+end;
+
+procedure TForm1.OnNewFrameDXGIFullScreen(const Frame: TFrame; const Monitor: TMonitor);
+var
+  Y: Integer;
+  FrameBitmap: TBitmap;
+  DstRow: PByte;
+  SrcRow: PByte;
+  RowWidth: Integer;
+begin
+  FrameBitmap := TBitmap.Create;
+  try
+    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top);
+    FrameBitmap.PixelFormat := pf32bit;
+
+    // Log the frame details
+    Display('DXGI Full Screen', Format('Left=%d Top=%d Right=%d Bottom=%d',
+      [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
+
+    // Fast row copy
+    RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
+    for Y := 0 to FrameBitmap.Height - 1 do
+    begin
+      DstRow := FrameBitmap.ScanLine[Y];
+      SrcRow := PByte(Frame.Data) + (Y * Frame.RowStrideInBytes);
+      Move(SrcRow^, DstRow^, RowWidth);
+    end;
+
+    // Save the frame to file (optional)
+    // FrameBitmap.SaveToFile(Format('D:\Capture\DXGIFrame_%d_FullScreen_%dx%d.bmp',
+    // [FrameCount, Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top]));
+    // Inc(FrameCount);
+
+    // Draw the full screen frame
+    Image1.Picture.Bitmap.Assign(FrameBitmap);
+
+    // Ensure desktop bitmap is correctly sized
+    if (FDesktopBitmap.Width <> SelectedMonitor.Width) or
+       (FDesktopBitmap.Height <> SelectedMonitor.Height) then
+    begin
+      FDesktopBitmap.SetSize(SelectedMonitor.Width, SelectedMonitor.Height);
+    end;
+
+    // Log the desktop bitmap update
+    Display('DXGI Full Screen', Format('Drawing full frame to desktop bitmap: Width=%d, Height=%d',
+      [FDesktopBitmap.Width, FDesktopBitmap.Height]));
+
+    // Draw the entire screen to the desktop bitmap
+    FDesktopBitmap.Canvas.Lock;
+    try
+      FDesktopBitmap.Canvas.Draw(0, 0, FrameBitmap);
+    finally
+      FDesktopBitmap.Canvas.Unlock;
+    end;
 
   finally
     FrameBitmap.Free;
@@ -536,19 +709,15 @@ var
   DstRow: PByte;
   SrcRow: PByte;
   RowWidth: Integer;
-  MetaStruct: TBytes;
-  PixelData: TBytes;
-  StreamSize: Integer;
-  CombinedData: TBytes;
 begin
   FrameBitmap := TBitmap.Create;
   try
-    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left,
-    Frame.Bounds.Bottom - Frame.Bounds.Top);
+    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top);
     FrameBitmap.PixelFormat := pf32bit;
 
-    Display('DXGI Change', Format('Left=%d Top=%d Right=%d Bottom=%d',
-    [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
+    // Log the frame update for changed regions
+    Display('DXGI Region', Format('Left=%d Top=%d Right=%d Bottom=%d',
+      [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
 
     // Fast row copy
     RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
@@ -559,13 +728,10 @@ begin
       Move(SrcRow^, DstRow^, RowWidth);
     end;
 
-    // Save the frame to file with region coordinates (optional)
-    //FrameBitmap.SaveToFile(Format('D:\Capture\DXGIFrame_%d_Region_%dx%d_at_%d_%d.bmp',
-    //[FrameCount, Width, Height, Frame.Bounds.Left, Frame.Bounds.Top]));
-    //Inc(FrameCount);
-
-    // Draw the frame
-    Image1.Picture.Bitmap.Assign(FrameBitmap);
+    // Save the frame to file (optional)
+    // FrameBitmap.SaveToFile(Format('D:\Capture\DXGIFrame_%d_Region_%dx%d_at_%d_%d.bmp',
+    // [FrameCount, Frame.Bounds.Right - Frame.Bounds.Left, Frame.Bounds.Bottom - Frame.Bounds.Top, Frame.Bounds.Left, Frame.Bounds.Top]));
+    // Inc(FrameCount);
 
     // Ensure desktop bitmap is correctly sized
     if (FDesktopBitmap.Width <> SelectedMonitor.Width) or
@@ -573,6 +739,10 @@ begin
     begin
       FDesktopBitmap.SetSize(SelectedMonitor.Width, SelectedMonitor.Height);
     end;
+
+    // Log the desktop bitmap update
+    Display('DXGI Region', Format('Updating dirty region on desktop bitmap: Width=%d, Height=%d',
+      [FDesktopBitmap.Width, FDesktopBitmap.Height]));
 
     // Update the bitmap
     FDesktopBitmap.Canvas.Lock;
@@ -582,116 +752,8 @@ begin
       FDesktopBitmap.Canvas.Unlock;
     end;
 
-    //Image1.Picture.Bitmap.Assign(FDesktopBitmap);
-
-    //Image1.Invalidate;
-
-  finally
-    FrameBitmap.Free;
-  end;
-end;
-
-procedure TForm1.OnNewFrameGDIFullScreen(const Frame: TFrame;
-const Monitor: TMonitor);
-var
-  Y: Integer;
-  FrameBitmap: TBitmap;
-  DstRow: PByte;
-  SrcRow: PByte;
-  RowWidth: Integer;
-  MetaStruct: TBytes;
-  PixelData: TBytes;
-  StreamSize: Integer;
-  CombinedData: TBytes;
-begin
-  FrameBitmap := TBitmap.Create;
-  try
-    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left,
-    Frame.Bounds.Bottom - Frame.Bounds.Top);
-    FrameBitmap.PixelFormat := pf32bit;
-
-    Display('GDI', Format('Left=%d Top=%d Right=%d Bottom=%d',
-    [Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
-
-    // Fast row copy
-    RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
-    for Y := 0 to FrameBitmap.Height - 1 do
-    begin
-      DstRow := FrameBitmap.ScanLine[Y];
-      SrcRow := PByte(Frame.Data) + (Y * Frame.RowStrideInBytes);
-      Move(SrcRow^, DstRow^, RowWidth);
-    end;
-
-    // Save the frame to a file (optional)
-    //FrameBitmap.SaveToFile(Format('D:\Capture\GDIFrame_%d_Full_%dx%d.bmp',
-    //[FrameCount, Monitor.Width, Monitor.Height]));
-    //Inc(FrameCount);
-
-    // Draw the frame
-    Image1.Picture.Bitmap.Assign(FrameBitmap);
-
-  finally
-    FrameBitmap.Free;
-  end;
-end;
-
-procedure TForm1.OnFrameChangedGDIRegion(const Frame: TFrame;
-const Monitor: TMonitor);
-var
-  Y: Integer;
-  FrameBitmap: TBitmap;
-  DstRow: PByte;
-  SrcRow: PByte;
-  RowWidth: Integer;
-  MetaStruct: TBytes;
-  PixelData: TBytes;
-  StreamSize: Integer;
-  CombinedData: TBytes;
-begin
-  FrameBitmap := TBitmap.Create;
-  try
-    FrameBitmap.SetSize(Frame.Bounds.Right - Frame.Bounds.Left,
-    Frame.Bounds.Bottom - Frame.Bounds.Top);
-    FrameBitmap.PixelFormat := pf32bit;
-
-    //Display('GDI Change', Format('Left=%d Top=%d Right=%d Bottom=%d',
-    //[Frame.Bounds.Left, Frame.Bounds.Top, Frame.Bounds.Right, Frame.Bounds.Bottom]));
-
-    // Fast row copy
-    RowWidth := (Frame.Bounds.Right - Frame.Bounds.Left) * SizeOf(TFrameBGRA);
-    for Y := 0 to FrameBitmap.Height - 1 do
-    begin
-      DstRow := FrameBitmap.ScanLine[Y];
-      SrcRow := PByte(Frame.Data) + (Y * Frame.RowStrideInBytes);
-      Move(SrcRow^, DstRow^, RowWidth);
-    end;
-
-    // Save the frame to file with region coordinates (optional)
-    //FrameBitmap.SaveToFile(Format('D:\Capture\DXGIFrame_%d_Region_%dx%d_at_%d_%d.bmp',
-    //[FrameCount, Width, Height, Frame.Bounds.Left, Frame.Bounds.Top]));
-    //Inc(FrameCount);
-
-    // Draw the frame
-    Image1.Picture.Bitmap.Assign(FrameBitmap);
-
-    // Ensure desktop bitmap is correctly sized
-    if (FDesktopBitmap.Width <> SelectedMonitor.Width) or
-       (FDesktopBitmap.Height <> SelectedMonitor.Height) then
-    begin
-      FDesktopBitmap.SetSize(SelectedMonitor.Width, SelectedMonitor.Height);
-    end;
-
-    // Update the bitmap
-    FDesktopBitmap.Canvas.Lock;
-    try
-      FDesktopBitmap.Canvas.Draw(Frame.Bounds.Left, Frame.Bounds.Top, FrameBitmap);
-    finally
-      FDesktopBitmap.Canvas.Unlock;
-    end;
-
-    //Image1.Picture.Bitmap.Assign(FDesktopBitmap);
-
-    //Image1.Invalidate;
+    // Assign the updated full screen with the updated region to the image control
+    Image1.Picture.Bitmap.Assign(FDesktopBitmap);
 
   finally
     FrameBitmap.Free;
